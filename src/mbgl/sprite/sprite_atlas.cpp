@@ -45,9 +45,6 @@ Rect<SpriteAtlas::dimension> SpriteAtlas::allocateImage(float src_width, float s
         return rect;
     }
 
-    rect.originalW = pixel_width;
-    rect.originalH = pixel_height;
-
     return rect;
 }
 
@@ -119,10 +116,10 @@ void SpriteAtlas::copy(const Holder& holder, const bool wrap) {
     const vec2<uint32_t> dstSize{ pixelWidth, pixelHeight };
     const Rect<uint32_t> dstPos{ static_cast<uint32_t>((offset + dst.x) * pixelRatio),
                                  static_cast<uint32_t>((offset + dst.y) * pixelRatio),
-                                 static_cast<uint32_t>(dst.originalW * pixelRatio),
-                                 static_cast<uint32_t>(dst.originalH * pixelRatio) };
+                                 static_cast<uint32_t>(holder.texture->pixelWidth),
+                                 static_cast<uint32_t>(holder.texture->pixelHeight) };
 
-    util::bilinearScale(srcData, srcSize, srcPos, dstData, dstSize, dstPos, wrap);
+    util::nearestNeighborScale(srcData, srcSize, srcPos, dstData, dstSize, dstPos);
 
     // Add borders around the copied image if required.
     if (wrap) {
