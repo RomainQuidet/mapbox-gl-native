@@ -17,3 +17,7 @@
 
 # Package views
 -keep class com.mapbox.mapboxsdk.views.** { *; }
+
+# Package layers
+-keep class com.mapbox.mapboxsdk.layers.** { *; }
+
