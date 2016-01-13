@@ -35,6 +35,10 @@ static double _normalizeAngle(double angle, double anchorAngle)
     return angle;
 }
 
+static bool _validPoint(const PrecisionPoint& point) {
+    return !std::isnan(point.x) && !std::isnan(point.y);
+}
+
 Transform::Transform(View &view_, ConstrainMode constrainMode)
     : view(view_)
     , state(constrainMode)
@@ -72,7 +76,7 @@ void Transform::jumpTo(const CameraOptions& camera) {
 }
 
 void Transform::moveBy(const PrecisionPoint& offset, const Duration& duration) {
-    if (!offset) {
+    if (!_validPoint(offset)) {
         return;
     }
 
@@ -153,26 +157,14 @@ double Transform::getScale() const {
     return state.scale;
 }
 
-void Transform::setScale(double scale, const PrecisionPoint& flippedAnchor, const Duration& duration) {
+void Transform::setScale(double scale, const PrecisionPoint& anchor, const Duration& duration) {
     if (std::isnan(scale)) {
         return;
     }
     
     CameraOptions camera;
-    if (flippedAnchor) {
-        const double factor = scale / state.scale;
-        PrecisionPoint center = {
-            state.width / 2.0,
-            state.height / 2.0,
-        };
-        PrecisionPoint anchor = {
-            flippedAnchor.x,
-            state.height - flippedAnchor.y,
-        };
-        PrecisionPoint offset = anchor - center;
-        camera.center = state.pointToLatLng(anchor - offset / factor);
-    }
     camera.zoom = state.scaleZoom(scale);
+    camera.anchor = anchor;
     easeTo(camera, duration);
 }
 
@@ -202,11 +194,39 @@ void Transform::easeTo(const CameraOptions& camera, const AnimationOptions& anim
         }
     }
     
-    Update update = state.getZoom() == zoom ? Update::Repaint : Update::Zoom;
-    
     // Constrain camera options.
     zoom = util::clamp(zoom, state.getMinZoom(), state.getMaxZoom());
+    const double scale = state.zoomScale(zoom);
     pitch = util::clamp(pitch, 0., util::PITCH_MAX);
+    
+    PrecisionPoint anchor = camera.anchor ? *camera.anchor : PrecisionPoint(NAN, NAN);
+    if (_validPoint(anchor)) {
+        anchor.y = state.getHeight() - anchor.y;
+        TileCoordinate coord = state.pointToCoordinate(anchor).zoomTo(state.getZoom());
+        PrecisionPoint centerPoint = { state.width / 2.0f, state.height / 2.0f };
+        TileCoordinate centerCoord = state.pointToCoordinate(centerPoint).zoomTo(state.getZoom());
+        TileCoordinate coordDiff = centerCoord - coord;
+        const double factor = scale / state.scale;
+        PrecisionPoint offset = {
+            coordDiff.column * util::tileSize * (1.0 - factor),
+            coordDiff.row * util::tileSize * (1.0 - factor),
+        };
+        anchor = {
+            state.x * factor - offset.x,
+            state.y * factor - offset.y,
+        };
+    }
+    
+    const PrecisionPoint startPoint = {
+        _validPoint(anchor) ? state.x : state.lngX(startLatLng.longitude),
+        _validPoint(anchor) ? state.y : state.latY(startLatLng.latitude),
+    };
+    const PrecisionPoint endPoint = {
+        _validPoint(anchor) ? anchor.x : state.lngX(latLng.longitude),
+        _validPoint(anchor) ? anchor.y : state.latY(latLng.latitude),
+    };
+    
+    Update update = state.getZoom() == zoom ? Update::Repaint : Update::Zoom;
     
     // Minimize rotation by taking the shorter path around the circle.
     angle = _normalizeAngle(angle, state.angle);
@@ -216,7 +236,11 @@ void Transform::easeTo(const CameraOptions& camera, const AnimationOptions& anim
     if (duration == Duration::zero()) {
         view.notifyMapChange(MapChangeRegionWillChange);
 
-        state.setLatLngZoom(latLng, zoom);
+        if (_validPoint(anchor)) {
+            state.setScalePoint(scale, anchor);
+        } else {
+            state.setLatLngZoom(latLng, zoom);
+        }
         state.angle = angle;
         state.pitch = pitch;
 
@@ -231,7 +255,6 @@ void Transform::easeTo(const CameraOptions& camera, const AnimationOptions& anim
         state.Bc = startWorldSize / 360;
         state.Cc = startWorldSize / util::M2PI;
         
-        const double scale = state.zoomScale(zoom);
         const double startScale = state.scale;
         const double startAngle = state.angle;
         const double startPitch = state.pitch;
@@ -245,12 +268,17 @@ void Transform::easeTo(const CameraOptions& camera, const AnimationOptions& anim
                 return ease.solve(t, 0.001);
             },
             [=](double t) {
-                LatLng frameLatLng = {
-                    util::interpolate(startLatLng.latitude, latLng.latitude, t),
-                    util::interpolate(startLatLng.longitude, latLng.longitude, t),
-                };
+                PrecisionPoint framePoint = util::interpolate(startPoint, endPoint, t);
                 double frameScale = util::interpolate(startScale, scale, t);
-                state.setLatLngZoom(frameLatLng, state.scaleZoom(frameScale));
+                if (_validPoint(anchor)) {
+                    state.setScalePoint(frameScale, framePoint);
+                } else {
+                    LatLng frameLatLng = {
+                        state.yLat(framePoint.y, startWorldSize),
+                        state.xLng(framePoint.x, startWorldSize),
+                    };
+                    state.setLatLngZoom(frameLatLng, state.scaleZoom(frameScale));
+                }
                 
                 if (angle != startAngle) {
                     state.angle = util::wrap(util::interpolate(startAngle, angle, t), -M_PI, M_PI);
@@ -520,7 +548,7 @@ void Transform::setAngle(double angle, const PrecisionPoint& flippedAnchor, cons
     };
     LatLng anchorLatLng;
 
-    if (flippedAnchor) {
+    if (_validPoint(flippedAnchor)) {
         anchorLatLng = state.pointToLatLng(anchor);
         setLatLng(anchorLatLng);
     }
@@ -529,7 +557,7 @@ void Transform::setAngle(double angle, const PrecisionPoint& flippedAnchor, cons
     camera.angle = angle;
     easeTo(camera, duration);
 
-    if (flippedAnchor) {
+    if (_validPoint(flippedAnchor)) {
         setLatLng(anchorLatLng, anchor);
     }
 }
