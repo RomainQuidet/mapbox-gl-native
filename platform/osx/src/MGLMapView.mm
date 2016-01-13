@@ -871,7 +871,7 @@ public:
 - (void)scaleBy:(double)scaleFactor atPoint:(NSPoint)point animated:(BOOL)animated {
     [self willChangeValueForKey:@"centerCoordinate"];
     [self willChangeValueForKey:@"zoomLevel"];
-    mbgl::PrecisionPoint center(point.x, point.y);
+    mbgl::PrecisionPoint center(point.x, self.bounds.size.height - point.y);
     _mbglMap->scaleBy(scaleFactor, center, MGLDurationInSeconds(animated ? MGLAnimationDuration : 0));
     [self didChangeValueForKey:@"zoomLevel"];
     [self didChangeValueForKey:@"centerCoordinate"];
@@ -1079,9 +1079,33 @@ public:
 - (void)handlePanGesture:(NSPanGestureRecognizer *)gestureRecognizer {
     NSPoint delta = [gestureRecognizer translationInView:self];
     NSPoint endPoint = [gestureRecognizer locationInView:self];
-    NSPoint startPoint = NSMakePoint(endPoint.x - delta.x, self.bounds.size.height - (endPoint.y - delta.y));
+    NSPoint startPoint = NSMakePoint(endPoint.x - delta.x, endPoint.y - delta.y);
     
     NSEventModifierFlags flags = [NSApp currentEvent].modifierFlags;
+    if (gestureRecognizer.state == NSGestureRecognizerStateBegan) {
+        [self.window invalidateCursorRectsForView:self];
+        _mbglMap->setGestureInProgress(true);
+        
+        if (![self isPanningWithGesture]) {
+            // Hide the cursor except when panning.
+            CGDisplayHideCursor(kCGDirectMainDisplay);
+        }
+    } else if (gestureRecognizer.state == NSGestureRecognizerStateEnded
+               || gestureRecognizer.state == NSGestureRecognizerStateCancelled) {
+        _mbglMap->setGestureInProgress(false);
+        [self.window invalidateCursorRectsForView:self];
+        
+        if (![self isPanningWithGesture]) {
+            // Move the cursor back to the start point and show it again, creating
+            // the illusion that it has stayed in place during the entire gesture.
+            CGPoint cursorPoint = [self convertPoint:startPoint toView:nil];
+            cursorPoint = [self.window convertRectToScreen:{ startPoint, NSZeroSize }].origin;
+            cursorPoint.y = [NSScreen mainScreen].frame.size.height - cursorPoint.y;
+            CGDisplayMoveCursorToPoint(kCGDirectMainDisplay, cursorPoint);
+            CGDisplayShowCursor(kCGDirectMainDisplay);
+        }
+    }
+    
     if (flags & NSShiftKeyMask) {
         // Shift-drag to zoom.
         if (!self.zoomEnabled) {
@@ -1091,25 +1115,16 @@ public:
         _mbglMap->cancelTransitions();
         
         if (gestureRecognizer.state == NSGestureRecognizerStateBegan) {
-            _mbglMap->setGestureInProgress(true);
             _scaleAtBeginningOfGesture = _mbglMap->getScale();
         } else if (gestureRecognizer.state == NSGestureRecognizerStateChanged) {
             CGFloat newZoomLevel = log2f(_scaleAtBeginningOfGesture) - delta.y / 75;
             [self scaleBy:powf(2, newZoomLevel) / _mbglMap->getScale() atPoint:startPoint animated:NO];
-        } else if (gestureRecognizer.state == NSGestureRecognizerStateEnded
-                   || gestureRecognizer.state == NSGestureRecognizerStateCancelled) {
-            _mbglMap->setGestureInProgress(false);
-            // Maps.app locks the cursor to the start point, but that would
-            // interfere with the pan gesture recognizer. Just move the cursor
-            // back at the end of the gesture.
-            CGDisplayMoveCursorToPoint(kCGDirectMainDisplay, startPoint);
         }
     } else if (flags & NSAlternateKeyMask) {
         // Option-drag to rotate and/or tilt.
         _mbglMap->cancelTransitions();
         
         if (gestureRecognizer.state == NSGestureRecognizerStateBegan) {
-            _mbglMap->setGestureInProgress(true);
             _directionAtBeginningOfGesture = self.direction;
             _pitchAtBeginningOfGesture = _mbglMap->getPitch();
         } else if (gestureRecognizer.state == NSGestureRecognizerStateChanged) {
@@ -1123,27 +1138,25 @@ public:
             if (self.pitchEnabled) {
                 _mbglMap->setPitch(_pitchAtBeginningOfGesture + delta.y / 5);
             }
-        } else if (gestureRecognizer.state == NSGestureRecognizerStateEnded
-                   || gestureRecognizer.state == NSGestureRecognizerStateCancelled) {
-            _mbglMap->setGestureInProgress(false);
         }
     } else if (self.scrollEnabled) {
         // Otherwise, drag to pan.
         _mbglMap->cancelTransitions();
         
-        if (gestureRecognizer.state == NSGestureRecognizerStateBegan) {
-            [self.window invalidateCursorRectsForView:self];
-            _mbglMap->setGestureInProgress(true);
-        } else if (gestureRecognizer.state == NSGestureRecognizerStateChanged) {
+        if (gestureRecognizer.state == NSGestureRecognizerStateChanged) {
             delta.y *= -1;
             [self offsetCenterCoordinateBy:delta animated:NO];
             [gestureRecognizer setTranslation:NSZeroPoint inView:self];
-        } else if (gestureRecognizer.state == NSGestureRecognizerStateEnded
-                   || gestureRecognizer.state == NSGestureRecognizerStateCancelled) {
-            _mbglMap->setGestureInProgress(false);
-            [self.window invalidateCursorRectsForView:self];
         }
     }
+}
+
+/// Returns whether the user is panning using a gesture.
+- (BOOL)isPanningWithGesture {
+    NSGestureRecognizerState state = _panGestureRecognizer.state;
+    NSEventModifierFlags flags = [NSApp currentEvent].modifierFlags;
+    return ((state == NSGestureRecognizerStateBegan || state == NSGestureRecognizerStateChanged)
+            && !(flags & NSShiftKeyMask || flags & NSAlternateKeyMask));
 }
 
 /// Pinch to zoom.
@@ -1201,7 +1214,7 @@ public:
     _mbglMap->cancelTransitions();
     
     NSPoint gesturePoint = [gestureRecognizer locationInView:self];
-    [self scaleBy:0.5 atPoint:NSMakePoint(gesturePoint.x, self.bounds.size.height - gesturePoint.y) animated:YES];
+    [self scaleBy:0.5 atPoint:gesturePoint animated:YES];
 }
 
 /// Double-click or double-tap to zoom in.
@@ -1213,7 +1226,7 @@ public:
     _mbglMap->cancelTransitions();
     
     NSPoint gesturePoint = [gestureRecognizer locationInView:self];
-    [self scaleBy:2 atPoint:NSMakePoint(gesturePoint.x, self.bounds.size.height - gesturePoint.y) animated:YES];
+    [self scaleBy:2 atPoint:gesturePoint animated:YES];
 }
 
 - (void)smartMagnifyWithEvent:(NSEvent *)event {
@@ -1224,7 +1237,7 @@ public:
     _mbglMap->cancelTransitions();
     
     NSPoint gesturePoint = [self convertPoint:event.locationInWindow fromView:nil];
-    [self scaleBy:0.5 atPoint:NSMakePoint(gesturePoint.x, self.bounds.size.height - gesturePoint.y) animated:YES];
+    [self scaleBy:0.5 atPoint:gesturePoint animated:YES];
 }
 
 /// Rotate fingers to rotate.
@@ -1261,7 +1274,6 @@ public:
             _mbglMap->cancelTransitions();
             
             NSPoint gesturePoint = [self convertPoint:event.locationInWindow fromView:nil];
-            gesturePoint.y = self.bounds.size.height - gesturePoint.y;
             double zoomDelta = event.scrollingDeltaY / 4;
             [self scaleBy:exp2(zoomDelta) atPoint:gesturePoint animated:YES];
         }
@@ -2002,8 +2014,7 @@ public:
 
 - (void)resetCursorRects {
     // Drag to pan has a grabbing hand cursor.
-    if (_panGestureRecognizer.state == NSGestureRecognizerStateBegan
-        || _panGestureRecognizer.state == NSGestureRecognizerStateChanged) {
+    if ([self isPanningWithGesture]) {
         [self addCursorRect:self.bounds cursor:[NSCursor closedHandCursor]];
         return;
     }
