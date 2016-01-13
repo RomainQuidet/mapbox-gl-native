@@ -159,6 +159,7 @@ public:
     double _scaleAtBeginningOfGesture;
     CLLocationDirection _directionAtBeginningOfGesture;
     CGFloat _pitchAtBeginningOfGesture;
+    BOOL _didHideCursorDuringGesture;
     
     MGLAnnotationContextMap _annotationContextsByAnnotationTag;
     MGLAnnotationTag _selectedAnnotationTag;
@@ -1089,13 +1090,15 @@ public:
         if (![self isPanningWithGesture]) {
             // Hide the cursor except when panning.
             CGDisplayHideCursor(kCGDirectMainDisplay);
+            _didHideCursorDuringGesture = YES;
         }
     } else if (gestureRecognizer.state == NSGestureRecognizerStateEnded
                || gestureRecognizer.state == NSGestureRecognizerStateCancelled) {
         _mbglMap->setGestureInProgress(false);
         [self.window invalidateCursorRectsForView:self];
         
-        if (![self isPanningWithGesture]) {
+        if (_didHideCursorDuringGesture) {
+            _didHideCursorDuringGesture = NO;
             // Move the cursor back to the start point and show it again, creating
             // the illusion that it has stayed in place during the entire gesture.
             CGPoint cursorPoint = [self convertPoint:startPoint toView:nil];
